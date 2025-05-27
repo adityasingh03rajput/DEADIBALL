@@ -1,12 +1,2 @@
-Flask
-Werkzeug
+websockets
 python-dotenv
-Flask-SQLAlchemy
-Flask-Migrate
-Flask-Cors
-PyJWT
-passlib
-python-dateutil
-gunicorn
-gevent
-Flask-Limiter
