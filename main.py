@@ -1,78 +1,74 @@
 from flask import Flask, request, jsonify
-from flask_socketio import SocketIO, emit
 from collections import defaultdict
 import time
 import threading
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'secret!'
-socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Store connected users and their last active time
-connected_users = {}
-active_rooms = defaultdict(list)  # {room_name: [user1, user2]}
+# Store messages and users
+chat_rooms = defaultdict(list)  # {room_name: [messages]}
+users_last_seen = {}            # {username: last_active_time}
 
 @app.route("/ping", methods=["POST"])
 def ping():
     """Handle client heartbeats"""
-    data = request.json
-    username = data.get('username')
-    
+    username = request.json.get('username')
     if username:
-        connected_users[username] = time.time()
+        users_last_seen[username] = time.time()
         return {"status": "ok"}, 200
     return {"error": "Invalid data"}, 400
+
+@app.route("/send_message", methods=["POST"])
+def send_message():
+    """Handle new messages"""
+    data = request.json
+    username = data.get('username')
+    room = data.get('room')
+    message = data.get('message')
+    
+    if not all([username, room, message]):
+        return {"error": "Missing data"}, 400
+    
+    timestamp = time.strftime("%H:%M:%S")
+    chat_rooms[room].append({
+        'username': username,
+        'message': message,
+        'timestamp': timestamp
+    })
+    
+    # Keep only the last 100 messages per room
+    if len(chat_rooms[room]) > 100:
+        chat_rooms[room] = chat_rooms[room][-100:]
+    
+    return {"status": "sent", "timestamp": timestamp}, 200
+
+@app.route("/get_messages", methods=["GET"])
+def get_messages():
+    """Get recent messages"""
+    room = request.args.get('room')
+    last_index = int(request.args.get('last_index', 0))
+    
+    if not room:
+        return {"error": "Room not specified"}, 400
+    
+    messages = chat_rooms.get(room, [])
+    new_messages = messages[last_index:]
+    
+    return {
+        "messages": new_messages,
+        "total_messages": len(messages)
+    }, 200
 
 def cleanup_users():
     """Remove inactive users"""
     while True:
         current_time = time.time()
-        for username, last_active in list(connected_users.items()):
-            if current_time - last_active > 60:  # 1 minute timeout
-                connected_users.pop(username)
+        for username, last_seen in list(users_last_seen.items()):
+            if current_time - last_seen > 60:  # 1 minute timeout
+                users_last_seen.pop(username)
                 print(f"Removed inactive user: {username}")
         time.sleep(30)
 
-@socketio.on('connect')
-def handle_connect():
-    print(f"Client connected: {request.sid}")
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    for room, users in list(active_rooms.items()):
-        for user in users[:]:
-            if user['sid'] == request.sid:
-                users.remove(user)
-                emit('user_left', {'username': user['username']}, room=room)
-                print(f"{user['username']} left room {room}")
-
-@socketio.on('join_room')
-def handle_join(data):
-    username = data.get('username')
-    room = data.get('room')
-    
-    if username and room:
-        active_rooms[room].append({
-            'username': username,
-            'sid': request.sid
-        })
-        socketio.server.enter_room(request.sid, room)
-        emit('user_joined', {'username': username}, room=room)
-        print(f"{username} joined room {room}")
-
-@socketio.on('send_message')
-def handle_message(data):
-    username = data.get('username')
-    room = data.get('room')
-    message = data.get('message')
-    
-    if username and room and message:
-        emit('new_message', {
-            'username': username,
-            'message': message,
-            'timestamp': time.strftime("%H:%M:%S")
-        }, room=room)
-
 if __name__ == "__main__":
     threading.Thread(target=cleanup_users, daemon=True).start()
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
