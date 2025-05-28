@@ -1,74 +1,69 @@
 from flask import Flask, request, jsonify
 from collections import defaultdict
 import time
+from datetime import datetime
 import threading
 
 app = Flask(__name__)
 
-# Store messages and users
-chat_rooms = defaultdict(list)  # {room_name: [messages]}
-users_last_seen = {}            # {username: last_active_time}
+# Store messages and active users
+messages = defaultdict(list)  # {room: [messages]}
+active_users = {}  # {username: last_active}
 
-@app.route("/ping", methods=["POST"])
-def ping():
-    """Handle client heartbeats"""
-    username = request.json.get('username')
-    if username:
-        users_last_seen[username] = time.time()
-        return {"status": "ok"}, 200
-    return {"error": "Invalid data"}, 400
-
-@app.route("/send_message", methods=["POST"])
+@app.route('/send', methods=['POST'])
 def send_message():
-    """Handle new messages"""
     data = request.json
     username = data.get('username')
     room = data.get('room')
     message = data.get('message')
     
     if not all([username, room, message]):
-        return {"error": "Missing data"}, 400
+        return {'error': 'Missing data'}, 400
     
-    timestamp = time.strftime("%H:%M:%S")
-    chat_rooms[room].append({
+    # Add message with timestamp
+    msg_data = {
         'username': username,
         'message': message,
-        'timestamp': timestamp
-    })
+        'timestamp': datetime.now().isoformat()
+    }
+    messages[room].append(msg_data)
+    active_users[username] = time.time()
     
-    # Keep only the last 100 messages per room
-    if len(chat_rooms[room]) > 100:
-        chat_rooms[room] = chat_rooms[room][-100:]
-    
-    return {"status": "sent", "timestamp": timestamp}, 200
+    return {'status': 'sent'}, 200
 
-@app.route("/get_messages", methods=["GET"])
+@app.route('/get_messages', methods=['GET'])
 def get_messages():
-    """Get recent messages"""
     room = request.args.get('room')
-    last_index = int(request.args.get('last_index', 0))
-    
     if not room:
-        return {"error": "Room not specified"}, 400
+        return {'error': 'Room not specified'}, 400
     
-    messages = chat_rooms.get(room, [])
-    new_messages = messages[last_index:]
+    return {'messages': messages.get(room, [])}, 200
+
+@app.route('/active_users', methods=['GET'])
+def get_active_users():
+    room = request.args.get('room')
+    if not room:
+        return {'error': 'Room not specified'}, 400
     
-    return {
-        "messages": new_messages,
-        "total_messages": len(messages)
-    }, 200
+    # Get users active in last 60 seconds
+    active = [
+        user for user, last_active in active_users.items()
+        if time.time() - last_active < 60
+    ]
+    return {'users': active}, 200
 
 def cleanup_users():
     """Remove inactive users"""
     while True:
         current_time = time.time()
-        for username, last_seen in list(users_last_seen.items()):
-            if current_time - last_seen > 60:  # 1 minute timeout
-                users_last_seen.pop(username)
-                print(f"Removed inactive user: {username}")
+        inactive = [
+            user for user, last_active in active_users.items()
+            if current_time - last_active > 60
+        ]
+        for user in inactive:
+            del active_users[user]
         time.sleep(30)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     threading.Thread(target=cleanup_users, daemon=True).start()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
