@@ -1,106 +1,74 @@
 from flask import Flask, request, jsonify
-from collections import defaultdict, deque
+from collections import defaultdict
 import time
-from datetime import datetime
 import threading
 
 app = Flask(__name__)
 
-# Configuration
-MESSAGE_HISTORY_LIMIT = 100  # Max messages per room
-USER_TIMEOUT = 300  # 5 minutes
+# Store messages and users
+chat_rooms = defaultdict(list)  # {room_name: [messages]}
+users_last_seen = {}            # {username: last_active_time}
 
-# Data storage
-chat_rooms = defaultdict(deque)  # {room_name: deque(messages)}
-active_users = {}  # {username: last_active}
-
-@app.route('/ping', methods=['POST'])
+@app.route("/ping", methods=["POST"])
 def ping():
-    """Update user activity"""
+    """Handle client heartbeats"""
     username = request.json.get('username')
     if username:
-        active_users[username] = time.time()
-        return {'status': 'ok'}, 200
-    return {'error': 'Invalid data'}, 400
+        users_last_seen[username] = time.time()
+        return {"status": "ok"}, 200
+    return {"error": "Invalid data"}, 400
 
-@app.route('/send', methods=['POST'])
+@app.route("/send_message", methods=["POST"])
 def send_message():
-    """Send a message to a room"""
+    """Handle new messages"""
     data = request.json
     username = data.get('username')
     room = data.get('room')
     message = data.get('message')
     
     if not all([username, room, message]):
-        return {'error': 'Missing data'}, 400
+        return {"error": "Missing data"}, 400
     
-    # Create message
-    msg_data = {
+    timestamp = time.strftime("%H:%M:%S")
+    chat_rooms[room].append({
         'username': username,
         'message': message,
-        'timestamp': datetime.now().isoformat(),
-        'id': int(time.time() * 1000)  # Unique message ID
-    }
+        'timestamp': timestamp
+    })
     
-    # Add to room and trim history
-    chat_rooms[room].append(msg_data)
-    if len(chat_rooms[room]) > MESSAGE_HISTORY_LIMIT:
-        chat_rooms[room].popleft()
+    # Keep only the last 100 messages per room
+    if len(chat_rooms[room]) > 100:
+        chat_rooms[room] = chat_rooms[room][-100:]
     
-    active_users[username] = time.time()
-    return {'status': 'sent', 'id': msg_data['id']}, 200
+    return {"status": "sent", "timestamp": timestamp}, 200
 
-@app.route('/get_messages', methods=['GET'])
+@app.route("/get_messages", methods=["GET"])
 def get_messages():
-    """Get new messages since last_id"""
+    """Get recent messages"""
     room = request.args.get('room')
-    last_id = int(request.args.get('last_id', 0))
+    last_index = int(request.args.get('last_index', 0))
     
     if not room:
-        return {'error': 'Room not specified'}, 400
+        return {"error": "Room not specified"}, 400
     
-    # Find messages newer than last_id
-    new_messages = [
-        msg for msg in chat_rooms.get(room, [])
-        if msg['id'] > last_id
-    ]
-    
-    latest_id = max((msg['id'] for msg in chat_rooms.get(room, [])), default=0)
+    messages = chat_rooms.get(room, [])
+    new_messages = messages[last_index:]
     
     return {
-        'messages': new_messages,
-        'latest_id': latest_id
+        "messages": new_messages,
+        "total_messages": len(messages)
     }, 200
 
-@app.route('/get_users', methods=['GET'])
-def get_users():
-    """Get active users in a room"""
-    room = request.args.get('room')
-    if not room:
-        return {'error': 'Room not specified'}, 400
-    
-    # Get users active in the last USER_TIMEOUT seconds
-    active_threshold = time.time() - USER_TIMEOUT
-    users = [
-        username for username, last_active in active_users.items()
-        if last_active > active_threshold
-    ]
-    
-    return {'users': users}, 200
-
 def cleanup_users():
-    """Periodically clean inactive users"""
+    """Remove inactive users"""
     while True:
         current_time = time.time()
-        inactive_threshold = current_time - USER_TIMEOUT
-        
-        # Clean inactive users
-        for username, last_active in list(active_users.items()):
-            if last_active < inactive_threshold:
-                active_users.pop(username)
-        
-        time.sleep(60)
+        for username, last_seen in list(users_last_seen.items()):
+            if current_time - last_seen > 60:  # 1 minute timeout
+                users_last_seen.pop(username)
+                print(f"Removed inactive user: {username}")
+        time.sleep(30)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     threading.Thread(target=cleanup_users, daemon=True).start()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
